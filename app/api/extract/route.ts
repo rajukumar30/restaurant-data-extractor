@@ -8,19 +8,19 @@ const FIELD_MASK = [
 ].join(",");
 
 function safeDecode(value: string) {
-  try { return decodeURIComponent(value.replace(/\\+/g, " ")); }
-  catch { return value.replace(/\\+/g, " "); }
+  try { return decodeURIComponent(value.replace(/\+/g, " ")); }
+  catch { return value.replace(/\+/g, " "); }
 }
 
 function cleanText(value: string) {
-  return safeDecode(value).replace(/\\s+/g, " ").trim();
+  return safeDecode(value).replace(/\s+/g, " ").trim();
 }
 
 async function resolveMapsInput(input: string): Promise<{ query: string; originalUrl: string }> {
   let url: URL;
   try { url = new URL(input); } catch { throw new Error("Please enter a valid Google Maps URL."); }
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP or HTTPS Maps links are supported.");
-  if (!/(^|\\.)google\\.[a-z.]+$|(^|\\.)goo\\.gl$|(^|\\.)googleusercontent\\.com$/.test(url.hostname)) {
+  if (!/(^|\.)google\.[a-z.]+$|(^|\.)goo\.gl$|(^|\.)googleusercontent\.com$/.test(url.hostname)) {
     throw new Error("Please paste a Google Maps link (maps.app.goo.gl, google.com/maps, or maps.google.com).");
   }
 
@@ -43,7 +43,7 @@ async function resolveMapsInput(input: string): Promise<{ query: string; origina
 
   // Prefer the readable place name in /maps/place/<name>/ over opaque Maps IDs.
   if (!query) {
-    const placePath = resolved.pathname.match(/\\/place\\/([^/?#]+)/i);
+    const placePath = resolved.pathname.match(/\/place\/([^/?#]+)/i);
     if (placePath?.[1]) query = placePath[1];
   }
 
@@ -59,9 +59,9 @@ async function resolveMapsInput(input: string): Promise<{ query: string; origina
 
   if (!query) {
     const path = safeDecode(resolved.pathname)
-      .replace(/\\/(maps|data|search|place|preview)\\//gi, " ")
-      .replace(/@[-\\d.,zma]+/gi, " ")
-      .replace(/\\/(data|search|place)\\/?/gi, " ");
+      .replace(/\/(maps|data|search|place|preview)\//gi, " ")
+      .replace(/@[-\d.,zma]+/gi, " ")
+      .replace(/\/(data|search|place)\/?/gi, " ");
     const parts = path.split("/").filter(Boolean).filter(part => !/^(maps|preview)$/i.test(part));
     query = parts.join(" ");
   }
