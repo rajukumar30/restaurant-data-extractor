@@ -7,11 +7,11 @@ function asArray(value: any): any[] { return value == null ? [] : Array.isArray(
 function normalize(value: string) { return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim(); }
 function businessTokens(name: string) {
   const ignored = new Set(["the","and","restaurant","restaurants","cafe","cafes","hotel","bar","kitchen","food","shop","india"]);
-  return normalize(name).split(/\\s+/).filter((token) => token.length > 2 && !ignored.has(token));
+  return normalize(name).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token));
 }
 function localityTokens(address: string) {
   const ignored = new Set(["near","road","rd","street","sector","block","noida","uttar","pradesh","india","pin","bank"]);
-  return normalize(address).split(/\\s+/).filter((token) => token.length > 2 && !ignored.has(token) && !/^\\d+$/.test(token));
+  return normalize(address).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token) && !/^\d+$/.test(token));
 }
 function identityMatches(text: string, nameParts: string[], placeParts: string[]) {
   const normalized = normalize(text);
