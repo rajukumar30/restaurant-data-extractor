@@ -41,13 +41,11 @@ async function resolveMapsInput(input: string): Promise<{ query: string; origina
   const params = resolved.searchParams;
   let query = params.get("q") || params.get("query") || params.get("destination") || "";
 
-  // Prefer the readable place name in /maps/place/<name>/ over opaque Maps IDs.
   if (!query) {
     const placePath = resolved.pathname.match(/\/place\/([^/?#]+)/i);
     if (placePath?.[1]) query = placePath[1];
   }
 
-  // Some Maps URLs contain a readable !1s place token; skip internal hex/CID identifiers.
   if (!query) {
     const data = params.get("data") || "";
     const placeMatch = data.match(/!1s([^!]+)/);
@@ -77,11 +75,13 @@ export async function POST(request: NextRequest) {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "Google Places API key is not configured. Add GOOGLE_MAPS_API_KEY to Vercel Environment Variables and redeploy." }, { status: 503 });
 
+  let query = "";
   try {
     const body = await request.json();
     const mapsUrl = String(body.mapsUrl || "").trim();
     if (!mapsUrl) return NextResponse.json({ error: "A Google Maps URL is required." }, { status: 400 });
-    const { query, originalUrl } = await resolveMapsInput(mapsUrl);
+    const resolved = await resolveMapsInput(mapsUrl);
+    query = resolved.query;
 
     const searchResponse = await fetch("https://places.googleapis.com/v1/places:searchText", {
       method: "POST",
@@ -90,22 +90,26 @@ export async function POST(request: NextRequest) {
         "X-Goog-Api-Key": apiKey,
         "X-Goog-FieldMask": `places.${FIELD_MASK}`
       },
-      body: JSON.stringify({ textQuery: query, maxResultCount: 5, languageCode: "en", regionCode: "IN" }),
+      body: JSON.stringify({ textQuery: query, pageSize: 5, languageCode: "en", regionCode: "IN" }),
       signal: AbortSignal.timeout(15000)
     });
 
     const searchJson = await searchResponse.json();
     if (!searchResponse.ok) {
-      const message = searchJson?.error?.message || "Google Places could not search this restaurant.";
+      const googleError = searchJson?.error || {};
+      const message = googleError.message || "Google Places could not search this restaurant.";
       console.error("Google Places Text Search failed", {
         status: searchResponse.status,
+        code: googleError.code,
         message,
         query,
-        details: searchJson?.error?.details
+        details: googleError.details
       });
       return NextResponse.json({
         error: message,
-        ...(process.env.NODE_ENV !== "production" && { debug: { query, googleError: searchJson?.error } })
+        source: "Google Places API",
+        googleStatus: searchResponse.status,
+        query
       }, { status: searchResponse.status });
     }
 
@@ -139,7 +143,7 @@ export async function POST(request: NextRequest) {
       address: place.formattedAddress || "",
       phone: place.nationalPhoneNumber || place.internationalPhoneNumber || "",
       website: place.websiteUri || "",
-      mapsUrl: place.googleMapsUri || originalUrl,
+      mapsUrl: place.googleMapsUri || resolved.originalUrl,
       rating: place.rating,
       reviewCount: place.userRatingCount,
       hours: place.regularOpeningHours?.weekdayDescriptions || [],
@@ -155,6 +159,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ restaurant, matchedSearch: query }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected extraction error.";
-    return NextResponse.json({ error: message }, { status: 400 });
+    console.error("Restaurant extraction failed", { message, query, stack: error instanceof Error ? error.stack : undefined });
+    return NextResponse.json({ error: message, ...(query ? { query } : {}) }, { status: 400 });
   }
 }
