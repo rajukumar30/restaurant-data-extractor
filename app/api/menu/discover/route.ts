@@ -10,8 +10,8 @@ function businessTokens(name: string) {
   return normalize(name).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token));
 }
 function localityTokens(address: string) {
-  const ignored = new Set(["near","road","rd","street","sector","block","noida","uttar","pradesh","india","pin","bank"]);
-  return normalize(address).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token) && !/^\d+$/.test(token));
+  const ignored = new Set(["near","road","rd","street","sector","block","uttar","pradesh","india","pin","bank"]);
+  return normalize(address).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token) && !/[0-9]/.test(token));
 }
 function identityMatches(text: string, nameParts: string[], placeParts: string[]) {
   const normalized = normalize(text);
