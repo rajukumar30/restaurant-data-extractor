@@ -7,42 +7,76 @@ const FIELD_MASK = [
   "photos", "reviews"
 ].join(",");
 
+function safeDecode(value: string) {
+  try { return decodeURIComponent(value.replace(/\\+/g, " ")); }
+  catch { return value.replace(/\\+/g, " "); }
+}
+
 function cleanText(value: string) {
-  return value.replace(/\+/g, " ").replace(/%20/g, " ").replace(/\s+/g, " ").trim();
+  return safeDecode(value).replace(/\\s+/g, " ").trim();
 }
 
 async function resolveMapsInput(input: string): Promise<{ query: string; originalUrl: string }> {
   let url: URL;
   try { url = new URL(input); } catch { throw new Error("Please enter a valid Google Maps URL."); }
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP or HTTPS Maps links are supported.");
-  if (!/(^|\.)google\.[a-z.]+$|(^|\.)goo\.gl$|(^|\.)googleusercontent\.com$/.test(url.hostname)) {
+  if (!/(^|\\.)google\\.[a-z.]+$|(^|\\.)goo\\.gl$|(^|\\.)googleusercontent\\.com$/.test(url.hostname)) {
     throw new Error("Please paste a Google Maps link (maps.app.goo.gl, google.com/maps, or maps.google.com).");
   }
+
   let resolved = url;
   try {
-    const response = await fetch(url.toString(), { redirect: "follow", signal: AbortSignal.timeout(9000), headers: { "User-Agent": "Mozilla/5.0 PlaceExtract/1.0" } });
+    const response = await fetch(url.toString(), {
+      redirect: "follow",
+      signal: AbortSignal.timeout(12000),
+      headers: { "User-Agent": "Mozilla/5.0 PlaceExtract/1.0" }
+    });
     resolved = new URL(response.url || url.toString());
-  } catch { /* use the original short link if redirect resolution is unavailable */ }
+  } catch { /* use the original URL when redirect resolution is temporarily unavailable */ }
+
+  if (url.hostname === "maps.app.goo.gl" && resolved.hostname === url.hostname) {
+    throw new Error("Google Maps short link could not be expanded. Open the link in Google Maps, choose Share, then copy the full Maps URL and try again.");
+  }
 
   const params = resolved.searchParams;
   let query = params.get("q") || params.get("query") || params.get("destination") || "";
+
+  // Prefer the readable place name in /maps/place/<name>/ over opaque Maps IDs.
+  if (!query) {
+    const placePath = resolved.pathname.match(/\\/place\\/([^/?#]+)/i);
+    if (placePath?.[1]) query = placePath[1];
+  }
+
+  // Some Maps URLs contain a readable !1s place token; skip internal hex/CID identifiers.
   if (!query) {
     const data = params.get("data") || "";
     const placeMatch = data.match(/!1s([^!]+)/);
-    if (placeMatch) query = decodeURIComponent(placeMatch[1].replace(/\+/g, " "));
+    const candidate = placeMatch?.[1] || "";
+    if (candidate && !/^0x[0-9a-f]+:0x[0-9a-f]+$/i.test(candidate) && !/^[0-9a-f]{20,}$/i.test(candidate)) {
+      query = candidate;
+    }
   }
+
   if (!query) {
-    const path = decodeURIComponent(resolved.pathname).replace(/\/(data|search|place)\//g, " ").replace(/@[-\d.,zma]+/g, " ");
-    query = path.split("/").filter(Boolean).join(" ").replace(/\+/g, " ");
+    const path = safeDecode(resolved.pathname)
+      .replace(/\\/(maps|data|search|place|preview)\\//gi, " ")
+      .replace(/@[-\\d.,zma]+/gi, " ")
+      .replace(/\\/(data|search|place)\\/?/gi, " ");
+    const parts = path.split("/").filter(Boolean).filter(part => !/^(maps|preview)$/i.test(part));
+    query = parts.join(" ");
   }
+
   query = cleanText(query);
-  if (!query || query.length < 2) throw new Error("Could not identify the restaurant from this link. Try a full Google Maps place URL.");
+  if (!query || query.length < 2 || /^0x[0-9a-f]+:0x[0-9a-f]+$/i.test(query)) {
+    throw new Error("Could not read a restaurant name from this Maps link. Open the restaurant in Google Maps, tap Share, and copy its full link.");
+  }
   return { query, originalUrl: input };
 }
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "Google Places API key is not configured. Add GOOGLE_MAPS_API_KEY to .env.local and restart the app." }, { status: 503 });
+  if (!apiKey) return NextResponse.json({ error: "Google Places API key is not configured. Add GOOGLE_MAPS_API_KEY to Vercel Environment Variables and redeploy." }, { status: 503 });
+
   try {
     const body = await request.json();
     const mapsUrl = String(body.mapsUrl || "").trim();
@@ -51,21 +85,38 @@ export async function POST(request: NextRequest) {
 
     const searchResponse = await fetch("https://places.googleapis.com/v1/places:searchText", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Goog-Api-Key": apiKey, "X-Goog-FieldMask": `places.${FIELD_MASK}` },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": `places.${FIELD_MASK}`
+      },
       body: JSON.stringify({ textQuery: query, maxResultCount: 5, languageCode: "en", regionCode: "IN" }),
       signal: AbortSignal.timeout(15000)
     });
+
     const searchJson = await searchResponse.json();
     if (!searchResponse.ok) {
       const message = searchJson?.error?.message || "Google Places could not search this restaurant.";
-      return NextResponse.json({ error: message }, { status: searchResponse.status });
+      console.error("Google Places Text Search failed", {
+        status: searchResponse.status,
+        message,
+        query,
+        details: searchJson?.error?.details
+      });
+      return NextResponse.json({
+        error: message,
+        ...(process.env.NODE_ENV !== "production" && { debug: { query, googleError: searchJson?.error } })
+      }, { status: searchResponse.status });
     }
+
     const places = searchJson.places || [];
     if (!places.length) return NextResponse.json({ error: "No matching place was found. Try copying the restaurant's full Google Maps URL." }, { status: 404 });
 
-    // Prefer a result whose name or address is present in the resolved Maps URL query.
     const normalized = query.toLowerCase();
-    const place = places.find((p: any) => normalized.includes((p.displayName?.text || "").toLowerCase()) || (p.displayName?.text || "").toLowerCase().includes(normalized)) || places[0];
+    const place = places.find((p: any) =>
+      normalized.includes((p.displayName?.text || "").toLowerCase()) ||
+      (p.displayName?.text || "").toLowerCase().includes(normalized)
+    ) || places[0];
 
     const origin = new URL(request.url).origin;
     const photos = (place.photos || []).map((p: any) => ({
