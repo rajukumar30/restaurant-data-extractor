@@ -162,12 +162,12 @@ export async function POST(request: NextRequest) {
       photos,
       reviews,
       menu: {
-        status: "not_available_from_places_api",
+        status: "not_searched",
         sections: [],
         sourceUrls: [],
         notes: [
           "Google Places does not return a complete structured restaurant menu or item prices.",
-          "No menu items have been inferred or invented. Add a menu discovery or document OCR source to populate sections and items."
+          "No menu items have been inferred or invented. Use the separate menu search to look for publicly indexed structured menu data."
         ]
       },
       menuNote: "A complete menu is not available from the Google Places response."
