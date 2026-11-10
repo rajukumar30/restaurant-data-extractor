@@ -5,8 +5,8 @@ import { Search, MapPin, Star, Clock3, Phone, Globe, Camera, MessageSquareText, 
 
 type Restaurant = {
   id: string; name: string; address?: string; phone?: string; website?: string;
-  mapsUrl?: string; rating?: number; reviewCount?: number; hours?: string[];
-  latitude?: number; longitude?: number; types?: string[]; priceLevel?: string;
+  mapsUrl?: string; rating?: number; reviewCount?: number; hours: string[];
+  latitude?: number; longitude?: number; types: string[]; priceLevel?: string;
   photos: { name: string; url: string; width?: number; height?: number; attribution?: string[] }[];
   reviews: { rating?: number; text?: string; author?: string; publishedAt?: string; relativeTime?: string }[];
   menuNote: string;
