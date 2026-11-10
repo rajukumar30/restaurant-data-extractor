@@ -4,6 +4,21 @@ type NodeData = Record<string, any>;
 type SearchResult = { title?: string; url?: string; description?: string; schemas?: any[] };
 
 function asArray(value: any): any[] { return value == null ? [] : Array.isArray(value) ? value : [value]; }
+function normalize(value: string) { return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim(); }
+function businessTokens(name: string) {
+  const ignored = new Set(["the","and","restaurant","restaurants","cafe","cafes","hotel","bar","kitchen","food","shop","india"]);
+  return normalize(name).split(/\\s+/).filter((token) => token.length > 2 && !ignored.has(token));
+}
+function localityTokens(address: string) {
+  const ignored = new Set(["near","road","rd","street","sector","block","noida","uttar","pradesh","india","pin","bank"]);
+  return normalize(address).split(/\\s+/).filter((token) => token.length > 2 && !ignored.has(token) && !/^\\d+$/.test(token));
+}
+function identityMatches(text: string, nameParts: string[], placeParts: string[]) {
+  const normalized = normalize(text);
+  const nameMatch = nameParts.length > 0 && nameParts.every((token) => normalized.includes(token));
+  const placeMatch = placeParts.length === 0 || placeParts.some((token) => normalized.includes(token));
+  return nameMatch && placeMatch;
+}
 function nodeTypes(node: NodeData): string[] {
   return asArray(node["@type"] || node.type).map((value) => String(value).toLowerCase());
 }
@@ -144,7 +159,13 @@ export async function POST(request: NextRequest) {
     }
 
     const uniqueResults = [...new Map(allResults.filter((r) => r.url).map((r) => [r.url, r])).values()];
-    const candidateResults = uniqueResults.filter((r) => /menu|food|dish|order|restaurant|cuisine|pdf/i.test(`${r.title || ""} ${r.description || ""} ${r.url || ""}`)).slice(0, 12);
+    const nameParts = businessTokens(name);
+    const placeParts = localityTokens(address);
+    const candidateResults = uniqueResults.filter((r) => {
+      const identity = `${r.title || ""} ${r.description || ""} ${r.url || ""}`;
+      return identityMatches(identity, nameParts, placeParts) &&
+        /menu|food|dish|order|restaurant|cuisine|pdf/i.test(identity);
+    }).slice(0, 12);
     const sections = new Map<string, Map<string, any>>();
     const sourceUrls: string[] = [];
     let fetchedPages = 0;
