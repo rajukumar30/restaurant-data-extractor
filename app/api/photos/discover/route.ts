@@ -25,8 +25,17 @@ function normalize(value: string) {
   return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim();
 }
 function nameTokens(name: string) {
-  const ignored = new Set(["the","and","restaurant","restaurants","cafe","cafes","hotel","bar","kitchen","food","shop","noida","india"]);
+  const ignored = new Set(["the","and","restaurant","restaurants","cafe","cafes","hotel","bar","kitchen","food","shop","india"]);
   return normalize(name).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token));
+}
+function locationTokens(address: string) {
+  const ignored = new Set(["near","road","rd","street","sector","block","noida","uttar","pradesh","india","pin","hdfc","bank"]);
+  return normalize(address).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token) && !/^\d+$/.test(token));
+}
+function hasLocationMatch(text: string, tokens: string[]) {
+  if (!tokens.length) return true;
+  const normalized = normalize(text);
+  return tokens.some((token) => normalized.includes(token));
 }
 function hasBusinessMatch(text: string, tokens: string[]) {
   const normalized = normalize(text);
@@ -53,6 +62,7 @@ export async function POST(request: NextRequest) {
     if (!name) return NextResponse.json({ error: "Business name is required." }, { status: 400 });
 
     const tokens = nameTokens(name);
+    const locality = locationTokens(address);
     if (!tokens.length) return NextResponse.json({ photos: [], count: 0, notice: "The business name is too generic to verify additional images safely. Use owner-provided photos instead." });
 
     // First find pages that mention this exact business identity. Only images from these
@@ -65,7 +75,7 @@ export async function POST(request: NextRequest) {
     const matchedPages: string[] = [];
     for (const result of webResults) {
       const combined = `${result.title || ""} ${result.description || ""}`;
-      if (hasBusinessMatch(combined, tokens)) {
+      if (hasBusinessMatch(combined, tokens) && hasLocationMatch(`${combined} ${result.url || ""}`, locality)) {
         const host = hostOf(result.url);
         if (host) matchedHosts.add(host);
         const sourceUrl = httpsUrl(result.url);
@@ -82,7 +92,7 @@ export async function POST(request: NextRequest) {
       const originalUrl = httpsUrl(item.properties?.url);
       const sourceUrl = httpsUrl(item.url);
       const imageHost = hostOf(sourceUrl);
-      const titleMatches = hasBusinessMatch(item.title || "", tokens);
+      const titleMatches = hasBusinessMatch(item.title || "", tokens) && hasLocationMatch(item.title || "", locality);
       const pageMatches = Boolean(imageHost && matchedHosts.has(imageHost));
       // Fail closed: do not show unrelated food stock images just to increase the count.
       if (!titleMatches && !pageMatches) return [];
