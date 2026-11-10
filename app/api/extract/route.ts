@@ -98,18 +98,22 @@ export async function POST(request: NextRequest) {
     if (!searchResponse.ok) {
       const googleError = searchJson?.error || {};
       const message = googleError.message || "Google Places could not search this restaurant.";
-      console.error("Google Places Text Search failed", {
+      const diagnostic = {
         status: searchResponse.status,
         code: googleError.code,
         message,
         query,
-        details: googleError.details
-      });
+        details: googleError.details ?? [],
+        fieldViolations: (googleError.details ?? []).flatMap((item: any) => item.fieldViolations ?? [])
+      };
+      console.error("Google Places Text Search failed: " + JSON.stringify(diagnostic));
       return NextResponse.json({
         error: message,
         source: "Google Places API",
         googleStatus: searchResponse.status,
-        query
+        query,
+        details: diagnostic.details,
+        fieldViolations: diagnostic.fieldViolations
       }, { status: searchResponse.status });
     }
 
