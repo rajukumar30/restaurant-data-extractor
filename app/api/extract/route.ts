@@ -132,7 +132,10 @@ export async function POST(request: NextRequest) {
       url: `${origin}/api/photo?name=${encodeURIComponent(p.name)}`,
       width: p.widthPx,
       height: p.heightPx,
-      attribution: (p.authorAttributions || []).map((a: any) => a.displayName).filter(Boolean)
+      attribution: (p.authorAttributions || []).map((a: any) => a.displayName).filter(Boolean),
+      source: "Google Places",
+      sourceType: "google_places",
+      reuseStatus: "google_maps_platform_terms_apply"
     }));
     const reviews = (place.reviews || []).map((r: any) => ({
       rating: r.rating,
@@ -158,7 +161,16 @@ export async function POST(request: NextRequest) {
       businessStatus: place.businessStatus || "",
       photos,
       reviews,
-      menuNote: "Google Places does not provide a complete restaurant menu or item prices. Check the restaurant website or an authorized menu source."
+      menu: {
+        status: "not_available_from_places_api",
+        sections: [],
+        sourceUrls: [],
+        notes: [
+          "Google Places does not return a complete structured restaurant menu or item prices.",
+          "No menu items have been inferred or invented. Add a menu discovery or document OCR source to populate sections and items."
+        ]
+      },
+      menuNote: "A complete menu is not available from the Google Places response."
     };
     return NextResponse.json({ restaurant, matchedSearch: query }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
