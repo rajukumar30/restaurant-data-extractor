@@ -1,60 +1,124 @@
 import { NextRequest, NextResponse } from "next/server";
 
-type SchemaNode = Record<string, any>;
+type NodeData = Record<string, any>;
+type SearchResult = { title?: string; url?: string; description?: string; schemas?: any[] };
 
-function values(value: any): any[] {
-  if (value == null) return [];
-  return Array.isArray(value) ? value : [value];
+function asArray(value: any): any[] { return value == null ? [] : Array.isArray(value) ? value : [value]; }
+function nodeTypes(node: NodeData): string[] {
+  return asArray(node["@type"] || node.type).map((value) => String(value).toLowerCase());
 }
-
-function typeNames(node: SchemaNode): string[] {
-  return values(node["@type"] || node.type).map((value) => String(value).toLowerCase());
+function isType(node: NodeData, type: string) {
+  return nodeTypes(node).some((value) => value.endsWith(type.toLowerCase()));
 }
-
-function isType(node: SchemaNode, expected: string) {
-  return typeNames(node).some((value) => value.endsWith(expected.toLowerCase()));
-}
-
 function textValue(value: any): string {
   if (typeof value === "string") return value.trim();
-  if (value && typeof value === "object") return String(value.name || value.text || "").trim();
+  if (typeof value === "number") return String(value);
+  if (value && typeof value === "object") return String(value.name || value.text || value["@id"] || "").trim();
   return "";
 }
-
-function collectNodes(input: any, output: SchemaNode[] = [], seen = new Set<any>()) {
+function collectNodes(input: any, output: NodeData[] = [], seen = new Set<any>()) {
   if (!input || typeof input !== "object" || seen.has(input)) return output;
   seen.add(input);
   if (!Array.isArray(input) && (input["@type"] || input.type)) output.push(input);
   if (Array.isArray(input)) {
-    for (const item of input) collectNodes(item, output, seen);
+    for (const child of input) collectNodes(child, output, seen);
   } else {
-    for (const [key, value] of Object.entries(input)) {
-      if (key === "hasMenu" || key === "hasMenuSection" || key === "hasMenuItem" || key === "menu" || key === "@graph" || key === "mainEntity" || key === "itemListElement") {
-        collectNodes(value, output, seen);
-      }
-    }
+    // Walk the entire JSON-LD graph, not just a hard-coded subset of schema properties.
+    for (const child of Object.values(input)) collectNodes(child, output, seen);
   }
   return output;
 }
-
-function extractPrice(item: SchemaNode): { price?: number; currency?: string } {
-  const offers = values(item.offers || item.offer)[0] || {};
-  const raw = offers.price ?? offers.lowPrice ?? item.price;
+function safePublicHttpsUrl(value: string): URL | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password) return null;
+    const host = url.hostname.toLowerCase();
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") ||
+        /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(host) || host === "0.0.0.0" || host === "::1") return null;
+    return url;
+  } catch { return null; }
+}
+async function fetchPublicHtml(startUrl: string): Promise<string> {
+  let current = safePublicHttpsUrl(startUrl);
+  if (!current) return "";
+  for (let hop = 0; hop < 4; hop++) {
+    const response = await fetch(current.toString(), {
+      redirect: "manual",
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; PlaceExtract/1.0; +https://example.com/bot)", "Accept": "text/html,application/xhtml+xml" },
+      signal: AbortSignal.timeout(9000)
+    });
+    if ([301,302,303,307,308].includes(response.status)) {
+      const location = response.headers.get("location");
+      if (!location) return "";
+      current = safePublicHttpsUrl(new URL(location, current).toString());
+      if (!current) return "";
+      continue;
+    }
+    if (!response.ok || !(response.headers.get("content-type") || "").toLowerCase().includes("text/html")) return "";
+    const html = await response.text();
+    return html.slice(0, 1_500_000);
+  }
+  return "";
+}
+function jsonLdFromHtml(html: string): any[] {
+  const found: any[] = [];
+  const scripts = html.match(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) || [];
+  for (const script of scripts) {
+    const raw = script.replace(/^<script[^>]*>/i, "").replace(/<\/script>$/i, "").trim();
+    try { found.push(JSON.parse(raw)); } catch { /* Ignore malformed JSON-LD blocks. */ }
+  }
+  return found;
+}
+function priceFields(item: NodeData) {
+  const offer = asArray(item.offers || item.offer)[0] || {};
+  const raw = offer.price ?? offer.lowPrice ?? item.price;
   if (raw == null || raw === "") return {};
-  const numeric = Number(String(raw).replace(/[^0-9.]/g, ""));
+  const number = Number(String(raw).replace(/[^0-9.]/g, ""));
   return {
-    ...(Number.isFinite(numeric) ? { price: numeric } : {}),
-    ...(offers.priceCurrency || item.priceCurrency ? { currency: String(offers.priceCurrency || item.priceCurrency) } : {})
+    ...(Number.isFinite(number) ? { price: number } : {}),
+    ...(offer.priceCurrency || item.priceCurrency ? { currency: String(offer.priceCurrency || item.priceCurrency) } : {})
   };
+}
+function addItem(sectionMap: Map<string, Map<string, any>>, sectionName: string, item: NodeData, sourceUrl: string) {
+  const name = textValue(item.name);
+  if (!name) return;
+  if (!sectionMap.has(sectionName)) sectionMap.set(sectionName, new Map());
+  const price = priceFields(item);
+  const key = name.toLowerCase() + "|" + String((price as any).price ?? "");
+  sectionMap.get(sectionName)!.set(key, {
+    name,
+    description: textValue(item.description) || null,
+    ...price,
+    imageUrl: textValue(item.image) || null,
+    sourceUrl,
+    verified: false
+  });
+}
+function parseSchemas(schemas: any[], sourceUrl: string, sections: Map<string, Map<string, any>>) {
+  const nodes = collectNodes(schemas);
+  const menuSections = nodes.filter((node) => isType(node, "MenuSection"));
+  for (const section of menuSections) {
+    const sectionName = textValue(section.name) || "Menu";
+    const before = sections.get(sectionName)?.size || 0;
+    const items = collectNodes(section.hasMenuItem || section.itemListElement || []);
+    const direct = asArray(section.hasMenuItem || section.itemListElement);
+    for (const entry of direct) {
+      const item = entry?.item || entry;
+      if (item && typeof item === "object" && isType(item, "MenuItem")) addItem(sections, sectionName, item, sourceUrl);
+    }
+    // Some publishers omit @type on nested item nodes but retain name and offers.
+    if (!direct.length) for (const item of items) if (isType(item, "MenuItem")) addItem(sections, sectionName, item, sourceUrl);
+    void before;
+  }
+  if (!menuSections.length) {
+    for (const item of nodes.filter((node) => isType(node, "MenuItem"))) addItem(sections, "Menu items", item, sourceUrl);
+  }
 }
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.BRAVE_SEARCH_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({
-      error: "Menu discovery is not configured. Add BRAVE_SEARCH_API_KEY to Vercel Environment Variables and redeploy."
-    }, { status: 503 });
-  }
+  if (!apiKey) return NextResponse.json({ error: "Menu discovery is not configured. Add BRAVE_SEARCH_API_KEY to Vercel Environment Variables and redeploy." }, { status: 503 });
 
   try {
     const body = await request.json();
@@ -62,107 +126,68 @@ export async function POST(request: NextRequest) {
     const address = String(body.address || "").trim();
     if (!name) return NextResponse.json({ error: "Business name is required." }, { status: 400 });
 
-    const query = [`"${name}"`, address, "restaurant menu dishes prices menu PDF"].filter(Boolean).join(" ").slice(0, 600);
-    const response = await fetch("https://api.search.brave.com/res/v1/web/search", {
-      method: "POST",
-      headers: {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "X-Subscription-Token": apiKey
-      },
-      body: JSON.stringify({
-        q: query,
-        country: "IN",
-        search_lang: "en",
-        count: 20,
-        safesearch: "strict",
-        result_filter: ["web"]
-      }),
-      signal: AbortSignal.timeout(20000)
-    });
-
-    const result = await response.json();
-    if (!response.ok) {
-      const message = result?.error?.detail || result?.message || "Menu search provider returned an error.";
-      console.error("Brave menu search failed", { status: response.status, message });
-      return NextResponse.json({ error: message }, { status: response.status });
+    const queries = [
+      [`"${name}"`, address, "menu"].filter(Boolean).join(" "),
+      [`"${name}"`, address, "food menu price list dishes"].filter(Boolean).join(" "),
+      [`"${name}"`, address, "filetype:pdf menu"].filter(Boolean).join(" ")
+    ];
+    const allResults: SearchResult[] = [];
+    for (const query of queries) {
+      const params = new URLSearchParams({ q: query, country: "IN", search_lang: "en", count: "20" });
+      const response = await fetch(`https://api.search.brave.com/res/v1/web/search?${params.toString()}`, {
+        headers: { "Accept": "application/json", "X-Subscription-Token": apiKey },
+        signal: AbortSignal.timeout(15000)
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error?.detail || json?.message || `Menu search returned HTTP ${response.status}`);
+      allResults.push(...(json.web?.results || []));
     }
 
-    const results = result.web?.results || [];
-    const sourceUrls: string[] = [];
+    const uniqueResults = [...new Map(allResults.filter((r) => r.url).map((r) => [r.url, r])).values()];
+    const candidateResults = uniqueResults.filter((r) => /menu|food|dish|order|restaurant|cuisine|pdf/i.test(`${r.title || ""} ${r.description || ""} ${r.url || ""}`)).slice(0, 12);
     const sections = new Map<string, Map<string, any>>();
+    const sourceUrls: string[] = [];
+    let fetchedPages = 0;
 
-    for (const page of results) {
-      const sourceUrl = typeof page.url === "string" && page.url.startsWith("https://") ? page.url : "";
-      if (!sourceUrl) continue;
-      const titleAndDescription = `${page.title || ""} ${page.description || ""}`.toLowerCase();
-      const looksMenuRelated = /menu|food|dish|price|order|restaurant|cuisine/.test(titleAndDescription) || sourceUrl.toLowerCase().includes("menu");
-      if (looksMenuRelated) sourceUrls.push(sourceUrl);
-
-      const schemas = collectNodes(page.schemas || []);
-      const menuSections = schemas.filter((node) => isType(node, "MenuSection"));
-      const menuItems = schemas.filter((node) => isType(node, "MenuItem"));
-
-      for (const section of menuSections) {
-        const sectionName = textValue(section.name) || "Menu";
-        if (!sections.has(sectionName)) sections.set(sectionName, new Map());
-        const sectionItems = values(section.hasMenuItem || section.itemListElement);
-        for (const entry of sectionItems) {
-          const item = entry.item || entry;
-          if (!item || typeof item !== "object") continue;
-          const itemName = textValue(item.name);
-          if (!itemName) continue;
-          const price = extractPrice(item);
-          const key = `${itemName.toLowerCase()}|${price.price ?? ""}`;
-          sections.get(sectionName)!.set(key, {
-            name: itemName,
-            description: textValue(item.description) || null,
-            ...price,
-            imageUrl: textValue(item.image) || null,
-            sourceUrl,
-            verified: false
-          });
+    for (const page of candidateResults) {
+      const sourceUrl = String(page.url || "");
+      const safeUrl = safePublicHttpsUrl(sourceUrl);
+      if (!safeUrl) continue;
+      sourceUrls.push(safeUrl.toString());
+      // Brave may expose extracted Schema.org data directly on web results.
+      parseSchemas(page.schemas || [], safeUrl.toString(), sections);
+      // Also inspect the public page's JSON-LD. Search result objects do not contain
+      // the complete page schema, so relying on page.schemas alone misses many menus.
+      try {
+        const html = await fetchPublicHtml(safeUrl.toString());
+        if (html) {
+          fetchedPages++;
+          parseSchemas(jsonLdFromHtml(html), safeUrl.toString(), sections);
         }
-      }
-
-      if (menuSections.length === 0 && menuItems.length > 0) {
-        if (!sections.has("Menu items")) sections.set("Menu items", new Map());
-        for (const item of menuItems) {
-          const itemName = textValue(item.name);
-          if (!itemName) continue;
-          const price = extractPrice(item);
-          const key = `${itemName.toLowerCase()}|${price.price ?? ""}`;
-          sections.get("Menu items")!.set(key, {
-            name: itemName,
-            description: textValue(item.description) || null,
-            ...price,
-            imageUrl: textValue(item.image) || null,
-            sourceUrl,
-            verified: false
-          });
-        }
+      } catch {
+        // Some publishers block automated requests. Keep the source link for manual review.
       }
     }
 
-    const menu = [...sections.entries()].map(([sectionName, items]) => ({
+    const menuSections = [...sections.entries()].map(([sectionName, items]) => ({
       name: sectionName,
       items: [...items.values()]
     }));
-    const itemCount = menu.reduce((count, section) => count + section.items.length, 0);
+    const itemCount = menuSections.reduce((count, section) => count + section.items.length, 0);
     const uniqueSources = [...new Set(sourceUrls)];
-
     return NextResponse.json({
       menu: {
         status: itemCount > 0 ? "partial" : "not_found",
-        sections: menu,
+        sections: menuSections,
         sourceUrls: uniqueSources,
         notes: itemCount > 0
-          ? ["Menu items were extracted from structured data on public search-result pages.", "Items are unverified. Confirm the business identity and current prices with the business before publishing."]
-          : ["No machine-readable menu items were found in the returned public search results.", "Candidate source links are included when available. Upload a menu image or PDF for OCR to extract items that are not published as structured data."]
+          ? ["Menu items were extracted from structured data on public search-result pages. Results are unverified; confirm menu items and current prices with the business."]
+          : ["No machine-readable menu items were found in the accessible public pages. This does not mean the restaurant has no menu.", "Open the candidate source links or provide a menu photo/PDF for OCR. Menu image/PDF OCR is not included in this version."]
       },
       searchedSources: uniqueSources.length,
+      fetchedPages,
       itemCount,
-      query
+      queries
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Menu discovery failed.";
