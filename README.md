@@ -58,6 +58,7 @@ Keep the key server-side. Do not use a `NEXT_PUBLIC_` prefix, and do not commit 
 - `POST /api/extract` with JSON body `{ "mapsUrl": "https://maps.app.goo.gl/..." }`
 - `GET /api/photo?name=places%2FPLACE_ID%2Fphotos%2FPHOTO_RESOURCE`
 - `POST /api/photos/discover` with `{ "name": "Business name", "address": "Business address" }` (requires `BRAVE_SEARCH_API_KEY`)
+- `POST /api/menu/discover` with `{ "name": "Business name", "address": "Business address" }` (requires `BRAVE_SEARCH_API_KEY`)
 
 ## Next improvements
 
