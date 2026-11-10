@@ -29,8 +29,8 @@ function nameTokens(name: string) {
   return normalize(name).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token));
 }
 function locationTokens(address: string) {
-  const ignored = new Set(["near","road","rd","street","sector","block","noida","uttar","pradesh","india","pin","hdfc","bank"]);
-  return normalize(address).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token) && !/^\d+$/.test(token));
+  const ignored = new Set(["near","road","rd","street","sector","block","uttar","pradesh","india","pin","hdfc","bank"]);
+  return normalize(address).split(/\s+/).filter((token) => token.length > 2 && !ignored.has(token) && !/[0-9]/.test(token));
 }
 function hasLocationMatch(text: string, tokens: string[]) {
   if (!tokens.length) return true;
