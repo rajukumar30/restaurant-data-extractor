@@ -5,7 +5,7 @@ const FIELD_MASK = [
   "websiteUri", "googleMapsUri", "rating", "userRatingCount", "regularOpeningHours",
   "location", "types", "primaryTypeDisplayName", "priceLevel", "businessStatus",
   "photos", "reviews"
-].join(",");
+].map((field) => `places.${field}`).join(",");
 
 function safeDecode(value: string) {
   try { return decodeURIComponent(value.replace(/\+/g, " ")); }
@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
       headers: {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": `places.${FIELD_MASK}`
+        "X-Goog-FieldMask": FIELD_MASK
       },
       body: JSON.stringify({ textQuery: query, maxResultCount: 5, languageCode: "en", regionCode: "IN" }),
       signal: AbortSignal.timeout(15000)
