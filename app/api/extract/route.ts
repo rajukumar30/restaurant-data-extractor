@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
         "X-Goog-Api-Key": apiKey,
         "X-Goog-FieldMask": `places.${FIELD_MASK}`
       },
-      body: JSON.stringify({ textQuery: query, pageSize: 5, languageCode: "en", regionCode: "IN" }),
+      body: JSON.stringify({ textQuery: query, maxResultCount: 5, languageCode: "en", regionCode: "IN" }),
       signal: AbortSignal.timeout(15000)
     });
 
